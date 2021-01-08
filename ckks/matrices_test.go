@@ -190,7 +190,7 @@ func TestMatrices(t *testing.T) {
 
 				level := params.MaxLevel()
 
-				diagMatrix := MM.GenColumnRotationMatrix(d, k, params.LogSlots())
+				diagMatrix := MM.GenSubVectorRotationMatrix(d, k, 1, params.LogSlots())
 
 				scale := float64(params.Qi()[level])
 
@@ -233,21 +233,30 @@ func TestMatrices(t *testing.T) {
 
 			t.Run(fmt.Sprintf("k=%d/", k), func(t *testing.T) {
 
-				level := params.MaxLevel()
+				if d*d < params.Slots() {
 
-				diagMatrix := MM.GenRowRotationMatrix(d, k, params.LogSlots())
+					level := params.MaxLevel()
 
-				scale := float64(params.Qi()[level])
+					diagMatrix := MM.GenSubVectorRotationMatrix(d*d, k, d, params.LogSlots())
 
-				mRotateRows := encoder.EncodeDiagMatrixAtLvl(level, diagMatrix, scale, 16.0, params.LogSlots())
+					scale := float64(params.Qi()[level])
 
-				kgen.GenRotKeysForDiagMatrix(mRotateRows, sk, rotKeys)
+					mRotateRows := encoder.EncodeDiagMatrixAtLvl(level, diagMatrix, scale, 16.0, params.LogSlots())
+
+					kgen.GenRotKeysForDiagMatrix(mRotateRows, sk, rotKeys)
+
+					
+					eval.(*evaluator).multiplyByDiabMatrixNaive(ct, res, mRotateRows, rotKeys, c2QiQDecompA, c2QiPDecompA)
+				}else{
+					kgen.GenRotationKey(RotationLeft, sk, k*d, rotKeys)
+					eval.Rotate(ct, k*d, rotKeys, res)
+				}
+				
 
 				for j := range m {
 					m[j].RotateRows(1)
 				}
 
-				eval.(*evaluator).multiplyByDiabMatrixNaive(ct, res, mRotateRows, rotKeys, c2QiQDecompA, c2QiPDecompA)
 
 				VerifyTestVectors(d, params, encoder, decryptor, m, res, t)
 			})

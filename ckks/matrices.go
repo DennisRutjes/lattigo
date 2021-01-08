@@ -3,6 +3,7 @@ package ckks
 import (
 	"github.com/ldsec/lattigo/v2/ring"
 	"math"
+	//"fmt"
 )
 
 type MatrixMultiplier interface {
@@ -11,15 +12,15 @@ type MatrixMultiplier interface {
 	GenTransposeDiagMatrix(d, logSlots uint64) (diagMatrix map[uint64][]complex128)
 	GenPermuteAMatrix(d, logSlots uint64) (diagMatrix map[uint64][]complex128)
 	GenPermuteBMatrix(d, logSlots uint64) (diagMatrix map[uint64][]complex128)
-	GenColumnRotationMatrix(d, k, logSlots uint64) (diagMatrix map[uint64][]complex128)
-	GenRowRotationMatrix(d, k, logSlots uint64) (diagMatrix map[uint64][]complex128)
+	GenSubVectorRotationMatrix(vectorSize, k, batch, logSlots uint64) (diagMatrix map[uint64][]complex128)
+	
 }
 
 type matrixMultiplier struct {
 }
 
 type MMPt struct {
-	d         uint64
+	dimension uint64
 	mPermuteA *PtDiagMatrix
 	mPermuteB *PtDiagMatrix
 	mRotRows  []*PtDiagMatrix
@@ -31,26 +32,27 @@ func NewMatrixMultiplier(params *Parameters) MatrixMultiplier {
 	return &matrixMultiplier{}
 }
 
-func (mm *matrixMultiplier) GenPlaintextMatrices(params *Parameters, level uint64, d uint64, encoder Encoder) (mmpt *MMPt) {
+func (mm *matrixMultiplier) GenPlaintextMatrices(params *Parameters, level uint64, dimension uint64, encoder Encoder) (mmpt *MMPt) {
 
 	mmpt = new(MMPt)
 
-	mmpt.d = d
+	mmpt.dimension = dimension
 
 	var scale float64
 	scale = float64(params.Qi()[level]) * math.Sqrt(float64(params.Qi()[level-2])/params.Scale())
 
-	mmpt.mPermuteA = encoder.EncodeDiagMatrixAtLvl(level, mm.GenPermuteAMatrix(d, params.LogSlots()), scale, 16.0, params.LogSlots())
-	mmpt.mPermuteB = encoder.EncodeDiagMatrixAtLvl(level, mm.GenPermuteBMatrix(d, params.LogSlots()), scale, 16.0, params.LogSlots())
+	mmpt.mPermuteA = encoder.EncodeDiagMatrixAtLvl(level, mm.GenPermuteAMatrix(dimension, params.LogSlots()), scale, 16.0, params.LogSlots())
+	mmpt.mPermuteB = encoder.EncodeDiagMatrixAtLvl(level, mm.GenPermuteBMatrix(dimension, params.LogSlots()), scale, 16.0, params.LogSlots())
 
-	mmpt.mRotCols = make([]*PtDiagMatrix, d-1)
-	mmpt.mRotRows = make([]*PtDiagMatrix, d-1)
+	mmpt.mRotCols = make([]*PtDiagMatrix, dimension-1)
+	mmpt.mRotRows = make([]*PtDiagMatrix, dimension-1)
 
 	scale = float64(params.Qi()[level-1])
 
-	for i := uint64(0); i < d-1; i++ {
-		mmpt.mRotCols[i] = encoder.EncodeDiagMatrixAtLvl(level-1, mm.GenColumnRotationMatrix(d, i+1, params.LogSlots()), scale, 16.0, params.LogSlots())
-		mmpt.mRotRows[i] = encoder.EncodeDiagMatrixAtLvl(level-1, mm.GenRowRotationMatrix(d, i+1, params.LogSlots()), scale, 16.0, params.LogSlots())
+	for i := uint64(0); i < dimension-1; i++ {
+		mmpt.mRotCols[i] = encoder.EncodeDiagMatrixAtLvl(level-1, mm.GenSubVectorRotationMatrix(dimension, i+1, 1, params.LogSlots()), scale, 16.0, params.LogSlots())
+		mmpt.mRotRows[i] = encoder.EncodeDiagMatrixAtLvl(level-1, mm.GenSubVectorRotationMatrix(dimension*dimension, i+1, dimension, params.LogSlots()), scale, 16.0, params.LogSlots())
+
 	}
 	return
 }
@@ -91,7 +93,7 @@ func (eval *evaluator) MulMatrixAB(A, B *Ciphertext, mmpt *MMPt, rlk *Evaluation
 	eval.DecompInternal(ciphertextB.Level(), ciphertextB.value[1], c2QiQDecompB, c2QiPDecompB)
 
 	tmpC := NewCiphertext(eval.params, 2, ciphertextA.Level()-1, ciphertextA.Scale())
-	for i := uint64(0); i < mmpt.d-1; i++ {
+	for i := uint64(0); i < mmpt.dimension-1; i++ {
 
 		tmpA := NewCiphertext(eval.params, 1, ciphertextA.Level(), ciphertextA.Scale())
 		tmpB := NewCiphertext(eval.params, 1, ciphertextB.Level(), ciphertextB.Scale())
@@ -113,31 +115,31 @@ func (eval *evaluator) MulMatrixAB(A, B *Ciphertext, mmpt *MMPt, rlk *Evaluation
 	return
 }
 
-func (mm *matrixMultiplier) GenPermuteAMatrix(d, logSlots uint64) (diagMatrix map[uint64][]complex128) {
+func (mm *matrixMultiplier) GenPermuteAMatrix(dimension, logSlots uint64) (diagMatrix map[uint64][]complex128) {
 
 	slots := uint64(1 << logSlots)
 
 	diagMatrix = make(map[uint64][]complex128)
 
-	d2 := int(d * d)
+	d2 := int(dimension * dimension)
 
-	for i := -int(d) + 1; i < int(d); i++ {
+	for i := -int(dimension) + 1; i < int(dimension); i++ {
 
 		m := make([]complex128, slots)
 
 		for k := 0; k < d2; k++ {
 
 			if i < 0 {
-				for j := i; j < int(d); j++ {
-					x := (d2 + k - (int(d)+i)*int(d)) % d2
-					if x < int(d) && x >= -i {
+				for j := i; j < int(dimension); j++ {
+					x := (d2 + k - (int(dimension)+i)*int(dimension)) % d2
+					if x < int(dimension) && x >= -i {
 						m[k] = 1
 					}
 				}
 			} else {
 
-				for j := i; j < int(d); j++ {
-					if (d2+k-int(d)*i)%d2 < int(d)-i {
+				for j := i; j < int(dimension); j++ {
+					if (d2+k-int(dimension)*i)%d2 < int(dimension)-i {
 						m[k] = 1
 					}
 				}
@@ -153,27 +155,27 @@ func (mm *matrixMultiplier) GenPermuteAMatrix(d, logSlots uint64) (diagMatrix ma
 
 }
 
-func (mm *matrixMultiplier) GenPermuteBMatrix(d, logSlots uint64) (diagMatrix map[uint64][]complex128) {
+func (mm *matrixMultiplier) GenPermuteBMatrix(dimension, logSlots uint64) (diagMatrix map[uint64][]complex128) {
 
 	slots := uint64(1 << logSlots)
 
 	diagMatrix = make(map[uint64][]complex128)
 
-	d2 := int(d * d)
+	d2 := int(dimension * dimension)
 
-	if d*d < 1<<logSlots {
+	if uint64(d2) < slots {
 
-		for i := -int((d - 1) * d); i < d2; i = i + int(d) {
+		for i := -int((dimension - 1) * dimension); i < d2; i = i + int(dimension) {
 
 			m := make([]complex128, 1<<logSlots)
 
 			if i >= 0 {
-				for j := 0; j < d2-i; j = j + int(d) {
-					m[i/int(d)+j] = 1
+				for j := 0; j < d2-i; j = j + int(dimension) {
+					m[i/int(dimension)+j] = 1
 				}
 			} else {
-				for j := 0; j < d2+i; j = j + int(d) {
-					m[-i+int(d)+(i/int(d))+j] = 1
+				for j := 0; j < d2+i; j = j + int(dimension) {
+					m[-i+int(dimension)+(i/int(dimension))+j] = 1
 				}
 			}
 
@@ -182,11 +184,11 @@ func (mm *matrixMultiplier) GenPermuteBMatrix(d, logSlots uint64) (diagMatrix ma
 			diagMatrix[uint64((i+int(slots)))%slots] = m
 		}
 	} else {
-		for i := 0; i < int(d); i++ {
+		for i := 0; i < int(dimension); i++ {
 
 			m := make([]complex128, 1<<logSlots)
 
-			for j := 0; j < d2; j = j + int(d) {
+			for j := 0; j < d2; j = j + int(dimension) {
 				m[j+i] = 1
 			}
 
@@ -200,146 +202,94 @@ func (mm *matrixMultiplier) GenPermuteBMatrix(d, logSlots uint64) (diagMatrix ma
 				fmt.Println()
 			*/
 
-			diagMatrix[uint64(i)*d] = m
+			diagMatrix[uint64(i)*dimension] = m
 		}
 	}
 
 	return
 }
 
-func (mm *matrixMultiplier) GenColumnRotationMatrix(d, k, logSlots uint64) (diagMatrix map[uint64][]complex128) {
 
-	k %= d
+// Generates a diagonaly encoded permutation matrix M that acts on a column vector as follow :
+// M x v = [rot(a_0, a_1, ..., a_dimension-1, k), ... , rot(a_0, a_1, ..., a_dimension-1, k)]
+// This is done by generating the two masks :
+// mask_0 = [1, ..., 1, 0, ..., 0, ...]
+// mask_1 = [0, ..., 0, 1, ..., 1, ...]
+//           0 ----- k, k+1 --- dimension
+func (mm *matrixMultiplier) GenSubVectorRotationMatrix(vectorSize, k, batch, logSlots uint64) (diagMatrix map[uint64][]complex128) {
 
-	k = d - k
+	k %= vectorSize
 
 	diagMatrix = make(map[uint64][]complex128)
 
-	d2 := int(d * d)
+	slots := uint64(1<<logSlots)
 
-	m0 := make([]complex128, 1<<logSlots)
-	for i := 0; i < d2; i++ {
-		if i%int(d) < int(d-k) {
-			m0[i] = 1
+	if vectorSize < slots {
+		m0 := make([]complex128, slots)
+		m1 := make([]complex128, slots)
+
+		for i := uint64(0); i < slots/vectorSize; i++ {
+
+			index := i*vectorSize
+
+			for j := uint64(0); j < k*batch; j++ {
+				m0[j + index] = 1
+			}
+
+			for j := k*batch; j < vectorSize; j++ {
+				m1[j + index] = 1
+			}
 		}
-	}
 
-	populateVector(m0, d2, logSlots)
-
-	m1 := make([]complex128, 1<<logSlots)
-	for i := 0; i < d2; i++ {
-		if i%int(d) >= int(d-k) {
-			m1[i] = 1
-		}
-	}
-
-	populateVector(m1, d2, logSlots)
-
-	/*
-		fmt.Printf("%4d", (1<<logSlots)-k)
-		for i := range m0[:d2+d2]{
+		/*
+		fmt.Printf("%4d", (slots) - (vectorSize - k))
+		for i := range m0[:vectorSize]{
 			fmt.Printf("%2.f ", real(m0[i]))
 		}
 		fmt.Println()
 
-		fmt.Printf("%4d", d-k)
-		for i := range m1[:d2+d2]{
+		fmt.Printf("%4d", k)
+		for i := range m1[:vectorSize]{
 			fmt.Printf("%2.f ", real(m1[i]))
 		}
 		fmt.Println()
-	*/
-
-	diagMatrix[(1<<logSlots)-k] = m0
-	diagMatrix[d-k] = m1
-
-	return
-}
-
-func (mm *matrixMultiplier) GenRowRotationMatrix(d, k, logSlots uint64) (diagMatrix map[uint64][]complex128) {
-
-	k %= d
-
-	diagMatrix = make(map[uint64][]complex128)
-
-	d2 := int(d * d)
-
-	if d*d < 1<<logSlots {
-
-		k = d - k
-
-		m0 := make([]complex128, 1<<logSlots)
-		for i := 0; i < d2-int(k*d); i++ {
-			m0[i] = 1
-		}
-
-		m1 := make([]complex128, 1<<logSlots)
-		for i := (uint64(d2) - d*k); i < uint64(d2); i++ {
-			m1[i] = 1
-		}
-
-		populateVector(m0, d2, logSlots)
-		populateVector(m1, d2, logSlots)
-
-		rotatem0 := (1 << logSlots) - d*k
-		rotatem1 := uint64(d2) - d*k
-
-		/*
-			fmt.Printf("%4d", rotatem0)
-			for i := range m0[:d2+d2]{
-				fmt.Printf("%2.f ", real(m0[i]))
-			}
-			fmt.Println()
-
-			fmt.Printf("%4d", rotatem1)
-			for i := range m1[:d2+d2]{
-				fmt.Printf("%2.f ", real(m1[i]))
-			}
-			fmt.Println()
 		*/
 
-		diagMatrix[rotatem0] = m0
-		diagMatrix[rotatem1] = m1
+		diagMatrix[slots - vectorSize + k*batch] = m0
+		diagMatrix[k*batch] = m1
 
 	} else {
-
-		m0 := make([]complex128, 1<<logSlots)
-		for i := 0; i < d2; i++ {
-			m0[i] = 1
-		}
-
-		populateVector(m0, d2, logSlots)
-
-		diagMatrix[d*k] = m0
+		diagMatrix[batch*k] = nil
 	}
 
 	return
 }
 
-func (mm *matrixMultiplier) GenTransposeDiagMatrix(d, logSlots uint64) (diagMatrix map[uint64][]complex128) {
+func (mm *matrixMultiplier) GenTransposeDiagMatrix(dimension, logSlots uint64) (diagMatrix map[uint64][]complex128) {
 
 	slots := uint64(1 << logSlots)
 
 	diagMatrix = make(map[uint64][]complex128)
 
-	d2 := int(d * d)
+	d2 := int(dimension * dimension)
 
-	for i := -int(d) + 1; i < int(d); i++ {
+	for i := -int(dimension) + 1; i < int(dimension); i++ {
 
 		m := make([]complex128, slots)
 
 		if i >= 0 {
-			for j := 0; j < d2-i*int(d); j = j + int(d) + 1 {
+			for j := 0; j < d2-i*int(dimension); j = j + int(dimension) + 1 {
 				m[i+j] = 1
 			}
 		} else {
-			for j := -i * int(d); j < d2; j = j + int(d) + 1 {
+			for j := -i * int(dimension); j < d2; j = j + int(dimension) + 1 {
 				m[j] = 1
 			}
 		}
 
 		populateVector(m, d2, logSlots)
 
-		diagMatrix[uint64(i*int(d-1)+int(slots))%slots] = m
+		diagMatrix[uint64(i*int(dimension-1)+int(slots))%slots] = m
 	}
 
 	return
